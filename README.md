@@ -4,7 +4,9 @@ A small Windows app for selling Team Fortress 2 items on backpack.tf. Manage you
 
 [Download for Windows](https://github.com/gorniy11/Backpack-Seller/releases/latest)
 
-## What it does
+## MVP
+
+Version 1.0 covers a single-account selling workflow: pick an item, list it at your price, check the incoming offer, and follow the trade in Telegram. Matching offers are accepted while monitoring is on; confirm in Steam when requested.
 
 - Shows your tradable TF2 inventory with item images and filters.
 - Creates, edits, removes, and imports your backpack.tf sale listings.
@@ -14,6 +16,8 @@ A small Windows app for selling Team Fortress 2 items on backpack.tf. Manage you
 - Sends offer details, problems, and completed-trade notifications to Telegram.
 
 The app has English and Russian interfaces, plus light and dark themes. It does not compare market prices or track competing listings. You set the price yourself.
+
+**Try it offline:** extract the Windows release and run `DEMO.cmd`. It opens a sample inventory with fictional listings, so you can try filters, item cards, languages, and themes without signing in. Publishing and trades require your own account.
 
 ## Getting started
 

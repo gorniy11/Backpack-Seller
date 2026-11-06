@@ -128,7 +128,7 @@ class App:
         self.root.geometry("1460x940")
         self.root.minsize(1150, 780)
         self.root.configure(bg=BG)
-        self.asset_root = Path(__file__).resolve().parent / "assets"
+        self.asset_root = (Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]) / "assets"
         try:
             self.app_icon = tk.PhotoImage(file=str(self.asset_root / "app.png"))
             self.root.iconphoto(True, self.app_icon)
@@ -339,7 +339,7 @@ class App:
         footer.grid(row=2, column=0, sticky="ew", pady=(8, 0))
         footer.grid_columnconfigure(0, weight=1)
         ttk.Label(footer, textvariable=self.status_var, style="Muted.TLabel", wraplength=1100).grid(row=0, column=0, sticky="w")
-        ttk.Label(footer, text="1.0", style="Muted.TLabel").grid(row=0, column=1, sticky="e")
+        ttk.Label(footer, text="1.1", style="Muted.TLabel").grid(row=0, column=1, sticky="e")
 
     def _page(self, key):
         page = ttk.Frame(self.body)
@@ -610,6 +610,8 @@ class App:
         self._setting_field(telegram, 2, "telegram_chat_id", "Личный chat_id")
         policy = self._section(inner, "Продажи", 3)
         self._setting_field(policy, 2, "poll_interval", "Проверка офферов, сек.")
+        self._setting_field(policy, 3, "description_template", "Шаблон описания")
+        ttk.Label(policy, text="{name} · {price} · {paint}", style="Card.TLabel").grid(row=4, column=1, sticky="w")
         bump = self._section(inner, "Бамп объявлений", 4)
         self.setting_vars["bump_enabled"] = tk.BooleanVar(value=False)
         ttk.Checkbutton(bump, text="Автоматический бамп", variable=self.setting_vars["bump_enabled"]).grid(row=1, column=0, columnspan=2, sticky="w")
@@ -981,7 +983,6 @@ class App:
             card.configure(highlightbackground=ORANGE if key == asset_id else self.palette["item_border"])
         self.item_title.configure(text=row.get("name", "Предмет"))
         props = [str(row.get("quality") or ""), str(row.get("paint") or "")]
-        props.extend(str(value) for value in row.get("spells") or [])
         self.item_properties.configure(text="\n".join(filter(None, props)))
         self.item_icon.configure(image=self.large_images.get(row.get("icon_url")) or self._placeholder())
         from market import market_link
@@ -1244,7 +1245,7 @@ def main():
     if args.self_check:
         from runtime_check import run
         return run(args.self_check)
-    base = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
+    base = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
     data = args.data_dir or base / ("demo-data" if args.demo else "data")
     root = tk.Tk()
     events = queue.Queue()

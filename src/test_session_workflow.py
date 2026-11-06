@@ -51,12 +51,6 @@ class SessionWorkflowTests(unittest.TestCase):
         self.engine.refresh_inventory()
         self.assertFalse(self.engine.store.inventory_rows())
 
-    def test_completed_trade_removes_local_item_without_loading_inventory(self):
-        self.engine.monitoring = True
-        self.steam.accept.side_effect = self.fixture.complete_accept
-        self.fixture.record()
-        self.assertIsNone(self.engine.store.get("inventory", "100"))
-        self.steam.inventory.assert_not_called()
 
     def test_payment_summary_counts_refined_and_keys(self):
         offer = fixtures.offer()

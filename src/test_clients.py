@@ -240,29 +240,8 @@ class ClientTests(unittest.TestCase):
             client._check_session()
         self.assertEqual(len(self.session.calls), 5)
 
-    def test_accept_redirect_is_not_followed(self):
-        client = self.steam()
-        self.session.responses = [Response(status=302, headers={"Location": "/id/test/"})]
-        with self.assertRaises(ServiceError):
-            client.accept({"tradeofferid": "12", "accountid_other": 10, "trade_offer_state": 2, "is_our_offer": False})
-        self.assertEqual(len(self.session.calls), 1)
 
-    def test_accept_does_not_retry_or_report_network_error_as_rejection(self):
-        client = self.steam()
-        self.session.responses = [requests.Timeout("URL SECRET_API SECRET_SESSION")]
-        with self.assertRaises(ServiceError) as caught:
-            client.accept({"tradeofferid": "1", "accountid_other": 123, "trade_offer_state": 2, "is_our_offer": False})
-        self.assertTrue(caught.exception.uncertain)
-        self.assertNotIn("SECRET", str(caught.exception))
-        self.assertEqual(len(self.session.calls), 1)
-        self.assertFalse(self.session.calls[0][2]["allow_redirects"])
 
-    def test_accept_does_not_confirm_implicitly(self):
-        client = self.steam()
-        self.session.responses = [Response({"needs_mobile_confirmation": True})]
-        value = client.accept({"tradeofferid": "1", "accountid_other": 123, "trade_offer_state": 2})
-        self.assertTrue(value["needs_mobile_confirmation"])
-        self.assertEqual(len(self.session.calls), 1)
 
 
 
@@ -270,7 +249,7 @@ class ClientTests(unittest.TestCase):
         client = BackpackClient({"backpack_token": "SECRET"})
         response = Response({"id": "440_123", "item": {"id": "123"}, "intent": "sell"}, status=201)
         self.session.responses = [response]
-        result = client.create("123", 1, 135, "Описание")
+        result = client.create("123", 1, 135, "РћРїРёСЃР°РЅРёРµ")
         body = self.session.calls[0][2]["json"]
         self.assertEqual(body["id"], "123")
         self.assertEqual(body["currencies"], {"keys": 1, "metal": 15})
@@ -349,7 +328,7 @@ class ClientTests(unittest.TestCase):
         client = BackpackClient({"backpack_token": "SECRET"})
         self.session.responses = [Response(status=404)]
         self.assertIsNone(client.listing("440_123"))
-        self.session.responses = [Response(status=503)]
+        self.session.responses = [Response(status=503), Response(status=503)]
         with self.assertRaises(ServiceError):
             client.listing("440_123")
 
@@ -406,15 +385,6 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(client.create("123", 1, 0, "")["listing_id"], "440_123")
         self.assertEqual(len(self.session.calls), 1)
 
-    def test_steam_accept_empty_or_null_is_still_uncertain(self):
-        client = self.steam()
-        for response in [Response(ValueError(), text=""), Response(None)]:
-            self.session.calls.clear()
-            self.session.responses = [response]
-            with self.assertRaises(ServiceError) as caught:
-                client.accept({"tradeofferid": "1", "accountid_other": 123, "trade_offer_state": 2})
-            self.assertTrue(caught.exception.uncertain)
-            self.assertEqual(len(self.session.calls), 1)
 
     def test_backpack_preserves_validated_description_without_truncation(self):
         client = BackpackClient({"backpack_token": "SECRET"})
@@ -507,7 +477,7 @@ class ClientTests(unittest.TestCase):
     def test_telegram_sends_inline_buttons_and_no_parse_mode(self):
         client = TelegramClient({"telegram_token": "123:SECRET", "telegram_chat_id": "42"})
         self.session.responses = [Response({"ok": True, "result": {"message_id": 1}})]
-        buttons = [[{"text": "Принять", "callback_data": "approve:1"}]]
+        buttons = [[{"text": "РџСЂРёРЅСЏС‚СЊ", "callback_data": "approve:1"}]]
         client.send("<untrusted name>", buttons)
         body = self.session.calls[0][2]["json"]
         self.assertEqual(body["reply_markup"]["inline_keyboard"], buttons)

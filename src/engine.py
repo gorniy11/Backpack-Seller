@@ -70,9 +70,12 @@ class SellerEngine:
                 row["status"] = "remove_unknown"
                 self.store.put("listings", row["asset_id"], row)
         for row in self.store.offers():
-            if row["status"] == "accepting":
-                row["status"] = "accept_unknown"
+            if row["status"] in PENDING:
+                row["status"] = "manual"
                 self.store.put("offers", row["offer_id"], row)
+        for row in self.store.listings():
+            if row.pop("reserved_by", None):
+                self.store.put("listings", row["asset_id"], row)
         if self.demo:
             self._seed_demo()
         self.worker = threading.Thread(target=self._run, name="seller-monitor", daemon=True)
@@ -725,6 +728,7 @@ class SellerEngine:
                     amount = 1
                 counts[self._clean_display(name)] += amount
             lines.extend(["", title + ":"])
+            lines.append(f"Всего предметов: {sum(counts.values())}")
             lines.extend(f"• {name} × {amount}" for name, amount in counts.items())
             if not counts:
                 lines.append("• Нет предметов")
@@ -733,64 +737,42 @@ class SellerEngine:
     def _record_offer(self, offer):
         offer_id = str(offer["tradeofferid"])
         old = self.store.get("offers", offer_id, {})
-        if old.get("status") in set(TERMINAL.values()):
-            return
-        if old.get("status") in PENDING:
-            self._settle(old, offer)
-            return
-        state = offer.get("trade_offer_state")
-        if state != 2:
-            if old and state in TERMINAL:
-                self._settle(old, offer)
+        if offer.get("trade_offer_state") != 2:
+            if old:
+                old["status"] = TERMINAL.get(offer.get("trade_offer_state"), "manual")
+                self.store.put("offers", offer_id, old)
             return
         remote_error = ""
-        if self.monitoring:
-            try:
-                self.reconcile_listings()
-            except ServiceError:
-                remote_error = "Не удалось сверить действующее объявление с backpack.tf. Обмен не принят."
+        try:
+            self.reconcile_listings()
+        except ServiceError:
+            remote_error = "Не удалось сверить объявление backpack.tf. Проверьте условия вручную."
         result, descriptions, reserved = self._validated(offer)
         valid = result.valid and not reserved and not remote_error
-        row = {**old, "offer_id": offer_id, "partner": str(76561197960265728 + int(offer.get("accountid_other", 0))),
-               "status": "waiting" if valid else "blocked", "summary": self._summary(offer, descriptions),
-               "reason": remote_error or reserved or result.reason, "valid": valid, "fingerprint": result.fingerprint,
+        reason = remote_error or reserved or ("Вещи и оплата совпадают с объявлением." if valid else result.reason)
+        row = {**old, "offer_id": offer_id,
+               "partner": str(76561197960265728 + int(offer.get("accountid_other", 0))),
+               "status": "manual", "summary": self._summary(offer, descriptions),
+               "reason": reason, "valid": valid, "fingerprint": result.fingerprint,
                "asset_ids": list(result.asset_ids), "raw": offer}
         self.store.put("offers", offer_id, row)
-        if self.monitoring and valid:
-            try:
-                self.accept(offer_id, expected=row["fingerprint"])
-            except (ValueError, ServiceError) as error:
-                current = self.store.get("offers", offer_id)
-                if current["status"] in {"waiting", "blocked"}:
-                    current.update(status="blocked", valid=False, reason=str(error))
-                    self.store.put("offers", offer_id, current)
-                    self._notice_blocked(current)
-                self.log(str(error))
-        elif self.monitoring and not valid:
-            self._notice_blocked(row)
+        signature = hashlib.sha256((row["summary"] + reason + str(valid)).encode()).hexdigest()[:20]
+        verdict = "Проверка пройдена." if valid else "Проверка не пройдена."
+        self._queue_notice("offer-check:" + offer_id + ":" + signature,
+                           verdict + "\n" + reason + "\nОбмен выполняется вручную в Steam.\n\n" + row["summary"],
+                           self._offer_button(offer_id))
         try:
             self._flush_notices()
         except ServiceError:
             self.log("Telegram: уведомление сохранено и будет отправлено после восстановления связи.")
         self.emit()
 
+
     @staticmethod
     def _offer_button(offer_id):
         return [[dict(text="Открыть обмен в Steam", url=f"https://steamcommunity.com/tradeoffer/{offer_id}/")]]
 
-    def _notice_blocked(self, row):
-        signature = hashlib.sha256((row["fingerprint"] + row["reason"]).encode()).hexdigest()[:20]
-        self._queue_notice("blocked:" + row["offer_id"] + ":" + signature,
-                           "Обмен не принят. " + row["reason"] + "\n\n" + row["summary"],
-                           self._offer_button(row["offer_id"]))
 
-    def _notice_confirmation(self, row):
-        self.store.batch(self._cancel_notice_entries(("accept-unknown:" + row["offer_id"],)))
-        self._queue_notice("manual-confirm:" + row["offer_id"],
-                           "Проверка пройдена: вещи и оплата совпадают с действующим объявлением backpack.tf.\n"
-                           + row.get("checked_price", "")
-                           + "\nПрограмма приняла предложение. Подтвердите обмен вручную в Steam.\n\n" + row["summary"],
-                           self._offer_button(row["offer_id"]))
 
     def _cancel_notice_entries(self, prefixes):
         """Return SQL updates to commit alongside the offer state change."""
@@ -806,120 +788,9 @@ class SellerEngine:
                 entries.append(("outbox", key, notice))
         return entries
 
-    def _notice_escrow(self, row):
-        self.store.batch(self._cancel_notice_entries(("accept-unknown:" + row["offer_id"],
-                                                     "manual-confirm:" + row["offer_id"])))
-        price = "Сверенная цена: " + row["checked_price"] + "\n" if row.get("checked_price") else ""
-        self._queue_notice("escrow:" + row["offer_id"],
-                           "Steam сообщает об удержании обмена. Обмен ещё не завершён; программа дождётся итогового состояния.\n"
-                           + price + "\n" + row["summary"], self._offer_button(row["offer_id"]))
 
-    def accept(self, offer_id, expected=None):
-        with self.lock:
-            if self.demo:
-                raise ValueError("Демонстрация: реальные обмены отключены.")
-            if not self.monitoring:
-                raise ValueError("Наблюдение остановлено. Новое предложение не принято.")
-            if not self._telegram_ready():
-                raise ValueError("Для принятия предложения настройте Telegram.")
-            row = self.store.get("offers", offer_id)
-            if not row or row["status"] != "waiting":
-                raise ValueError("Предложение уже обработано или не прошло проверку.")
-            self.reconcile_listings()
-            fresh = self.steam.offer(offer_id)
-            result, descriptions, reserved = self._validated(fresh)
-            if not result.valid or reserved or result.fingerprint != (expected or row["fingerprint"]):
-                row.update(status="blocked", valid=False, reason=reserved or "Состав обмена или условия объявления изменились. Обмен не принят.")
-                self.store.put("offers", offer_id, row)
-                raise ValueError("Повторная проверка не пройдена. Обмен не принят.")
-            if not self.monitoring:
-                return
-            row.update(status="accepting", raw=fresh, summary=self._summary(fresh, descriptions),
-                       checked_price=format_price(result.keys, result.metal_scrap))
-            entries = [("offers", offer_id, row)]
-            entries.extend(self._cancel_notice_entries(("blocked:" + offer_id,)))
-            for asset_id in result.asset_ids:
-                listing = self.store.get("listings", asset_id)
-                listing["reserved_by"] = str(offer_id)
-                entries.append(("listings", asset_id, listing))
-            self.store.batch(entries)
-            try:
-                response = self.steam.accept(fresh)
-                row["status"] = "needs_confirmation" if response.get("needs_mobile_confirmation") else "accept_unknown"
-                self.store.put("offers", offer_id, row)
-                if row["status"] == "needs_confirmation":
-                    self._notice_confirmation(row)
-                self._settle(row, self.steam.offer(offer_id))
-            except ServiceError:
-                current = self.store.get("offers", offer_id)
-                if current["status"] == "accepting":
-                    current["status"] = "accept_unknown"
-                    self.store.put("offers", offer_id, current)
-                self._queue_notice("accept-unknown:" + offer_id,
-                                   "Проверка с backpack.tf пройдена, но результат принятия пока не подтверждён Steam. "
-                                   "Программа сверит состояние без повторного принятия.\n\n" + row["summary"],
-                                   self._offer_button(offer_id))
-                self.log(f"Steam #{offer_id}: результат операции требует сверки. Повтор приёма отключён.")
-                raise
-            current = self.store.get("offers", offer_id)
-            if current["status"] == "accept_unknown":
-                self._queue_notice("accept-unknown:" + offer_id,
-                                   "Проверка с backpack.tf пройдена. Запрос принятия отправлен; ожидаем состояние Steam.\n\n" + row["summary"],
-                                   self._offer_button(offer_id))
-            try:
-                self._flush_notices()
-            except ServiceError:
-                self.log("Telegram: уведомление сохранено и будет отправлено после восстановления связи.")
-            self.emit()
 
-    def _settle(self, row, fresh):
-        state = fresh.get("trade_offer_state")
-        offer_id = row["offer_id"]
-        if state == 9 and row.get("status") in PENDING - {"decline_sent"}:
-            row["status"] = "needs_confirmation"
-            self._notice_confirmation(row)
-        if state == 11:
-            row["status"] = "in_escrow"
-            self._notice_escrow(row)
-        if state in TERMINAL:
-            row.update(status=TERMINAL[state], valid=False)
-            entries = [("offers", offer_id, row)]
-            entries.extend(self._cancel_notice_entries(("blocked:" + offer_id, "manual-confirm:" + offer_id,
-                                                        "accept-unknown:" + offer_id, "escrow:" + offer_id)))
-            for asset_id in row.get("asset_ids", []):
-                listing = self.store.get("listings", asset_id)
-                if listing and (listing.get("reserved_by") == offer_id or state == 3):
-                    listing.pop("reserved_by", None)
-                    if state == 3:
-                        listing.update(status="sold", cleanup_pending=True)
-                        self.store.delete("inventory", asset_id)
-                    entries.append(("listings", asset_id, listing))
-            if state == 3 and not row.get("success_recorded"):
-                row["success_recorded"] = True
-                entries.append(("offers", offer_id, row))
-                entries.append(("outbox", "success:" + offer_id,
-                                dict(text=("Обмен успешно завершён в Steam.\n" + row["summary"])[:3900], sent=False)))
-                self.log(f"Обмен #{offer_id} успешно завершён в Steam.")
-            self.store.batch(entries)
-        else:
-            self.store.put("offers", offer_id, row)
 
-    def decline(self, offer_id):
-        with self.lock:
-            if self.demo:
-                raise ValueError("Демонстрация: реальные обмены отключены.")
-            row = self.store.get("offers", offer_id)
-            if not row or row["status"] not in {"waiting", "blocked"}:
-                raise ValueError("Предложение уже обрабатывается или завершено.")
-            fresh = self.steam.offer(offer_id)
-            if fresh.get("trade_offer_state") != 2 or fresh.get("is_our_offer") is not False:
-                raise ValueError("Отклонить можно только активное входящее предложение.")
-            row.update(status="decline_sent")
-            self.store.put("offers", offer_id, row)
-            self.steam.decline(offer_id)
-            self._settle(row, self.steam.offer(offer_id))
-            self.log(f"Steam #{offer_id}: отправлен отказ.")
-            self.emit()
 
     def _telegram_ready(self):
         return bool(self._config["telegram_token"] and self._config["telegram_chat_id"])
@@ -935,7 +806,7 @@ class SellerEngine:
             rows = self.store.db.execute("SELECT id,data FROM outbox").fetchall()
         for key, payload in rows:
             notice = json.loads(payload)
-            if not notice["sent"]:
+            if not notice["sent"] and key.startswith("offer-check:"):
                 text = self._translate(notice["text"])
                 buttons = [[{**button, "text": self._translate(button["text"])} for button in line]
                            for line in notice.get("buttons") or []]
@@ -966,9 +837,6 @@ class SellerEngine:
                 if not self.monitoring:
                     return
                 self._record_offer(offer)
-            for row in self.store.offers():
-                if row["status"] in PENDING:
-                    self._settle(row, self.steam.offer(row["offer_id"]))
             self._cleanup()
             self._flush_notices()
             self.emit()
@@ -991,11 +859,8 @@ class SellerEngine:
                     next_trade_check = time.monotonic() + self._config["poll_interval"]
                     next_settle_check = next_trade_check
                 elif not self.demo and time.monotonic() >= next_settle_check:
-                    # Stopping prevents new accepts; pending trades still need a final result.
+                    # Deliver queued notifications after a temporary connection failure.
                     with self.lock:
-                        for row in self.store.offers():
-                            if row["status"] in PENDING:
-                                self._settle(row, self.steam.offer(row["offer_id"]))
                         self._cleanup()
                         self._flush_notices()
                     next_settle_check = time.monotonic() + self._config["poll_interval"]
@@ -1051,10 +916,10 @@ class SellerEngine:
             self.instance.close()
 
     def _seed_demo(self):
-        rows = [dict(asset_id="15178000001", name="Strange Professional Killstreak Rocket Launcher", quality="Strange", type="Primary weapon", paint="", spells=[], icon_url="", tradable=True),
-                dict(asset_id="15178000002", name="Team Captain", quality="Unique", type="Cosmetic", paint="Paint Color: A Distinctive Lack of Hue", spells=["Halloween: Voices from Below"], icon_url="", tradable=True),
-                dict(asset_id="15178000003", name="Team Captain", quality="Unique", type="Cosmetic", paint="Paint Color: Pink as Hell", spells=[], icon_url="", tradable=True),
-                dict(asset_id="15178000004", name="Unusual Killer Exclusive", quality="Unusual", type="Cosmetic", paint="", spells=[], icon_url="", tradable=True)]
+        rows = [dict(asset_id="15178000001", name="Strange Professional Killstreak Rocket Launcher", quality="Strange", type="Primary weapon", paint="", extra_properties=[], icon_url="", tradable=True),
+                dict(asset_id="15178000002", name="Team Captain", quality="Unique", type="Cosmetic", paint="Paint Color: A Distinctive Lack of Hue", extra_properties=[], icon_url="", tradable=True),
+                dict(asset_id="15178000003", name="Team Captain", quality="Unique", type="Cosmetic", paint="Paint Color: Pink as Hell", extra_properties=[], icon_url="", tradable=True),
+                dict(asset_id="15178000004", name="Unusual Killer Exclusive", quality="Unusual", type="Cosmetic", paint="", extra_properties=[], icon_url="", tradable=True)]
         for row in rows:
             row["icon_url"] = "demo:" + ("rocket.png" if row["asset_id"] == "15178000001" else "unusual.png" if row["asset_id"] == "15178000004" else "captain.png")
             row["name_color"] = "CF6A32" if row["quality"] == "Strange" else "8650AC" if row["quality"] == "Unusual" else "FFD700"
@@ -1065,5 +930,5 @@ class SellerEngine:
         self.store.replace_inventory(rows)
         self.store.put("listings", "15178000002", dict(asset_id="15178000002", name="Team Captain", keys=1, metal_scrap=135, status="active", listing_id="440_15178000002", details="Painted Team Captain · 1 key + 15 ref", version=1,
                        backpack_item=dict(appid=440, defindex=378, name="The Team Captain", baseName="Team Captain", quality={"id": 6},
-                                          craftable=True, tradable=True, paint={"name": "A Distinctive Lack of Hue"}, spells=[{"name": "Voices From Below"}])))
+                                          craftable=True, tradable=True, paint={"name": "A Distinctive Lack of Hue"}, extra_properties=[])))
         self.store.put("offers", "90000001", dict(offer_id="90000001", partner="76561198000000000", status="waiting", valid=True, reason="Цена и состав совпадают", summary="Ваши предметы:\n• Team Captain × 1\n\nПокупатель предлагает:\n• Mann Co. Supply Crate Key × 1\n• Refined Metal × 15"))

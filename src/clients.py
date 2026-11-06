@@ -15,11 +15,12 @@ import requests
 
 class ServiceError(RuntimeError):
     def __init__(self, message: str, *, uncertain: bool = False, retry_after: int | None = None,
-                 status_code: int | None = None):
+                 status_code: int | None = None, transient: bool = False):
         super().__init__(message)
         self.uncertain = uncertain
         self.retry_after = retry_after
         self.status_code = status_code
+        self.transient = transient
 
 
 def _numeric(value, label="ID") -> str:
@@ -55,7 +56,7 @@ class _HTTP:
 
     def __init__(self):
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "BackpackSeller/1.0", "Accept": "application/json"})
+        self.session.headers.update({"User-Agent": "BackpackSeller/1.1", "Accept": "application/json"})
 
     def _request(self, method, url, *, mutation=False, text=False, timeout=(10, 30),
                  profile_redirects=False, empty_delete_ok=False, **kwargs):
@@ -102,7 +103,7 @@ class _HTTP:
                 raise ServiceError(f"{self.service}: неожиданный формат ответа.", uncertain=mutation)
             return result
         except requests.RequestException:
-            raise ServiceError(f"{self.service}: соединение не удалось. Проверьте сеть и повторите проверку.", uncertain=mutation) from None
+            raise ServiceError(f"{self.service}: соединение не удалось. Проверьте сеть и повторите проверку.", uncertain=mutation, transient=True) from None
         finally:
             if response is not None:
                 response.close()
@@ -334,22 +335,7 @@ class SteamClient(_HTTP):
         offer["_descriptions"] = body.get("descriptions", [])
         return offer
 
-    def accept(self, offer):
-        offer_id = _numeric(offer.get("tradeofferid", ""), "номер оффера")
-        if offer.get("is_our_offer") or _integer(offer.get("trade_offer_state", 0), "статус оффера") != 2:
-            raise ServiceError("Steam: принимать можно только активное входящее предложение.")
-        partner = str(76561197960265728 + int(_numeric(offer.get("accountid_other", ""), "аккаунт покупателя")))
-        result = self._request("POST", f"{self.COMMUNITY}/tradeoffer/{offer_id}/accept", mutation=True, data={"sessionid": self._session_id(), "tradeofferid": offer_id, "serverid": "1", "partner": partner, "captcha": ""}, headers={"Referer": f"{self.COMMUNITY}/tradeoffer/{offer_id}/", "Origin": self.COMMUNITY})
-        if not isinstance(result, dict) or result.get("strError") or result.get("success") is False:
-            raise ServiceError("Steam: принятие не подтверждено. Проверьте состояние оффера.", uncertain=True)
-        return result
 
-    def decline(self, offer_id):
-        offer_id = _numeric(offer_id, "номер оффера")
-        result = self._request("POST", f"{self.COMMUNITY}/tradeoffer/{offer_id}/decline", mutation=True, data={"sessionid": self._session_id()}, headers={"Referer": f"{self.COMMUNITY}/tradeoffer/{offer_id}/"})
-        if not isinstance(result, dict) or result.get("strError") or result.get("success") is False:
-            raise ServiceError("Steam: отклонение не подтверждено. Проверьте состояние оффера.", uncertain=True)
-        return result
 
     def _check_session(self):
         self._session_id()
@@ -377,10 +363,19 @@ class BackpackClient(_HTTP):
         token = str(self.config.get("backpack_token", "")).strip()
         if not token:
             raise ServiceError("Укажите backpack.tf User Token в настройках (не WebAPI Key).")
-        result = self._request(method, self.BASE + path, mutation=mutation,
-                               empty_delete_ok=method.upper() == "DELETE",
-                               params={"token": token, **(params or {})},
-                               **({"json": body} if body is not None else {}))
+        for attempt in range(2):
+            try:
+                result = self._request(method, self.BASE + path, mutation=mutation,
+                                       timeout=(15, 90 if mutation else 60),
+                                       empty_delete_ok=method.upper() == "DELETE",
+                                       params={"token": token, **(params or {})},
+                                       **({"json": body} if body is not None else {}))
+                break
+            except ServiceError as error:
+                # Retry reads only. A timed-out write may already have succeeded.
+                if mutation or method.upper() != "GET" or attempt or not (error.transient or error.status_code in (502, 503, 504)):
+                    raise
+                time.sleep(1)
         if isinstance(result, dict) and (result.get("error") or result.get("success") is False or (result.get("reason") and result.get("message"))):
             raise ServiceError("backpack.tf: запрос отклонён. Проверьте токен, доступность предмета и лимит объявлений.", uncertain=mutation)
         return result

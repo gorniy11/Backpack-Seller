@@ -57,13 +57,6 @@ class MarketLinkTests(unittest.TestCase):
         self.assertEqual(query["australium"], ["1"])
         self.assertEqual(query["killstreak_tier"], ["3"])
 
-    def test_whole_spell_selection_transmitted_without_claiming_and_semantics(self):
-        row = dict(backpack_item=item(spells=[{"name": "Voices from Below"}, {"name": "Exorcism"}]))
-        result = market_link(row)
-        self.assertEqual(set(result["parameters"]["spell"].split(",")), {"Voices from Below", "Exorcism"})
-        self.assertIn("Полный набор Halloween Spells", result["manual"])
-        self.assertFalse(result["exact"])
-
     def test_unsupported_style_and_parts_have_manual_check_without_fake_params(self):
         row = dict(backpack_item=item(style={"name": "New School"}, craftNumber=42,
                                       strangeParts=[{"killEater": {"name": "Robots Destroyed"}}], festivized=True))
@@ -87,17 +80,15 @@ class MarketLinkTests(unittest.TestCase):
         self.assertTrue(result["manual"])
         self.assertFalse(result["exact"])
 
-    def test_unknown_strange_counter_keeps_quality_paint_and_spell_filters(self):
+    def test_unknown_strange_counter_keeps_quality_paint_filters(self):
         row = inventory(defindex=None, quality_id=None, name="Strange Team Captain")
         row["description"].update(app_data={}, market_name="Strange Team Captain", type="Strange Hat - Unknown Count: 0",
                                   tags=[{"category": "Quality", "internal_name": "strange"}],
-                                  descriptions=[{"value": "Paint Color: Pink as Hell"},
-                                                {"value": "Halloween: Voices from Below"}])
+                                  descriptions=[{"value": "Paint Color: Pink as Hell"}])
         result = market_link(row)
         self.assertEqual(result["parameters"]["item"], "Team Captain")
         self.assertEqual(result["parameters"]["quality"], 11)
         self.assertEqual(result["parameters"]["paint"], 16738740)
-        self.assertEqual(result["parameters"]["spell"], "Voices from Below")
         self.assertTrue(result["manual"])
         self.assertFalse(result["exact"])
 
@@ -105,23 +96,21 @@ class MarketLinkTests(unittest.TestCase):
         row = inventory(quality_id=15, name="Professional Killstreak Rocket Launcher")
         row["description"].update(market_name="Professional Killstreak Rocket Launcher", descriptions=[
             {"value": "Unusual Effect: Isotope"}, {"value": "Sheen: Team Shine"},
-            {"value": "Killstreaker: Fire Horns"}, {"value": "Halloween: Exorcism"}])
+            {"value": "Killstreaker: Fire Horns"}])
         query = self.query(row)
         self.assertEqual(query["quality"], ["15"])
         self.assertEqual(query["particle"], ["702"])
         self.assertEqual(query["killstreak_tier"], ["3"])
         self.assertEqual(query["sheen"], ["1"])
         self.assertEqual(query["killstreaker"], ["2002"])
-        self.assertEqual(query["spell"], ["Exorcism"])
 
     def test_backpack_unknown_attachment_keeps_all_independent_known_filters(self):
         row = dict(backpack_item=item(unknownExtra="property", paint={"id": 5040},
-                                      particle={"id": 13}, spells=[{"name": "Exorcism"}],
+                                      particle={"id": 13}, 
                                       killstreakTier=3, sheen={"id": 1}, killstreaker={"id": 2002}))
         result = market_link(row)
         self.assertEqual(result["parameters"]["paint"], 1315860)
         self.assertEqual(result["parameters"]["particle"], 13)
-        self.assertEqual(result["parameters"]["spell"], "Exorcism")
         self.assertEqual(result["parameters"]["sheen"], 1)
         self.assertEqual(result["parameters"]["killstreaker"], 2002)
         self.assertTrue(result["manual"])
@@ -131,12 +120,10 @@ class MarketLinkTests(unittest.TestCase):
         row["description"].update(app_data={}, tags=[{"category": "Quality", "internal_name": "Unique"},
                                                     {"category": "Quality", "internal_name": "strange"}],
                                   descriptions=[{"type": "usertext", "value": "Paint Color: Pink as Hell"},
-                                                {"type": "usertext", "value": "Halloween: Exorcism"},
                                                 {"type": "usertext", "value": "Unusual Effect: Burning Flames"}])
         result = market_link(row)
         self.assertNotIn("quality", result["parameters"])
         self.assertNotIn("paint", result["parameters"])
-        self.assertNotIn("spell", result["parameters"])
         self.assertNotIn("particle", result["parameters"])
 
 

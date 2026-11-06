@@ -2,18 +2,19 @@
 from __future__ import annotations
 
 import html
+import sys
 import json
 import re
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlencode
 
-KNOWN_LINK_ITEM_FIELDS = set("appid baseName defindex id imageUrl marketName name origin originalId price quality summary texture class wearTier slot particle tradable craftable priceindex level craftedBy tag killstreakTier killEaters australium giftedBy recipe sheen paint paintSecondaryHex style customName crateSeries customDesc equipped killstreaker tradableAfter elevatedQuality festivized craftNumber strangeParts rarity spells marketplaceTfListing dupe decal quantity attributes medalNumber containedItem".split())
+KNOWN_LINK_ITEM_FIELDS = set("appid baseName defindex id imageUrl marketName name origin originalId price quality summary texture class wearTier slot particle tradable craftable priceindex level craftedBy tag killstreakTier killEaters australium giftedBy recipe sheen paint paintSecondaryHex style customName crateSeries customDesc equipped killstreaker tradableAfter elevatedQuality festivized craftNumber strangeParts rarity marketplaceTfListing dupe decal quantity attributes medalNumber containedItem".split())
 
 
 @lru_cache(maxsize=1)
 def _metadata():
-    return json.loads((Path(__file__).resolve().parent / "assets" / "tf2_metadata.json").read_text(encoding="utf-8"))
+    return json.loads(((Path(sys._MEIPASS) if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]) / "assets" / "tf2_metadata.json").read_text(encoding="utf-8"))
 
 
 def _entity_label(value, table):
@@ -63,16 +64,6 @@ def _bool(value):
         return False
     raise ValueError("Неизвестны ограничения обмена или ковки предмета.")
 
-
-def _spell(value):
-    if isinstance(value, dict):
-        value = value.get("name")
-    name = _text(value)
-    name = re.sub(r"^(?:Halloween(?: Spell)?|Заклинание(?: Хеллоуина)?):\s*", "", name, flags=re.I)
-    name = re.sub(r"\s*\((?:spell only active|active during|only visible during|заклинание активно).*$", "", name, flags=re.I)
-    if not name:
-        raise ValueError("Не удалось определить Halloween Spell.")
-    return name.casefold()
 
 
 def _filter_entity_id(label, table):
@@ -165,18 +156,6 @@ def _partial_link_properties(item):
                     properties[key] = _label(text)
         except ValueError:
             pass
-    raw_spells = backpack.get("spells")
-    if not isinstance(raw_spells, list):
-        raw_spells = [text for text in texts if re.match(
-            r"^(?:Halloween(?: Spell)?|Заклинание(?: Хеллоуина)?):", text, re.I)]
-    spells = []
-    for spell in raw_spells:
-        try:
-            spells.append(_spell(spell))
-        except ValueError:
-            pass
-    if spells:
-        properties["spells"] = sorted(set(spells))
     canonical = _text(desc.get("market_name") or desc.get("market_hash_name")
                       or item.get("market_hash_name") or backpack.get("marketName") or item.get("name"))
     if "killstreak_tier" not in properties:
@@ -205,7 +184,7 @@ def _partial_link_properties(item):
 def market_link(item):
     """Build a search link and list properties that need checking on the website.
 
-    Multiple spells may match as OR, and some attachments have no URL filter.
+    Some attachments have no URL filter.
     """
     properties = _partial_link_properties(item)
     backpack = item.get("backpack_item") or {}
@@ -241,16 +220,6 @@ def market_link(item):
         fields["killstreak_tier"] = properties["killstreak_tier"]
     if properties.get("australium"):
         fields["australium"] = 1
-    spell_names = {name.casefold(): name for group in _metadata().get("spells", {}).values() for name in group.values()}
-    spells = properties.get("spells", [])
-    if spells:
-        known = [spell_names[name] for name in spells if name in spell_names]
-        if known:
-            fields["spell"] = ",".join(known)
-        if len(known) != len(spells):
-            manual.append("Неизвестное Halloween Spell")
-        if len(spells) > 1:
-            manual.append("Полный набор Halloween Spells")
     texture = properties.get("texture")
     if texture:
         original = backpack.get("texture")

@@ -13,7 +13,7 @@ Version 1.1 covers a single-account selling workflow: pick an item, list it at y
 - Opens backpack.tf with the selected item's known filters.
 - Bumps eligible listings manually or on a schedule.
 - Checks incoming offers against your listings and reports the result in Telegram.
-- Sends offer details, problems, and completed-trade notifications to Telegram.
+- Sends offer contents and validation results to Telegram.
 
 The app has English and Russian interfaces, plus light and dark themes. It does not compare market prices or track competing listings. You set the price yourself.
 
